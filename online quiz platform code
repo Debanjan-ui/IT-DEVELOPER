@@ -1,0 +1,1101 @@
+import React, { useEffect, useMemo, useState } from "react";
+
+const STORAGE_KEYS = {
+  users: "quiz_platform_users_v1",
+  quizzes: "quiz_platform_quizzes_v1",
+  attempts: "quiz_platform_attempts_v1",
+  session: "quiz_platform_session_v1",
+};
+
+const defaultUsers = [
+  { username: "admin", password: "admin123", role: "admin" },
+  { username: "demo", password: "demo123", role: "user" },
+  { username: "jane", password: "jane123", role: "user" },
+];
+
+const defaultQuizzes = [
+  {
+    id: 1,
+    title: "React Basics",
+    subject: "JavaScript",
+    difficulty: "easy",
+    timeLimit: 10,
+    createdBy: "admin",
+    questions: [
+      {
+        id: 1,
+        text: "What is React?",
+        options: [
+          "A library for building UIs",
+          "A database",
+          "A testing framework",
+          "A CSS framework",
+        ],
+        correctAnswer: 0,
+        explanation: "React is a JavaScript library for building user interfaces.",
+      },
+      {
+        id: 2,
+        text: "What is JSX?",
+        options: ["A syntax extension", "A database", "A server framework", "A CSS tool"],
+        correctAnswer: 0,
+        explanation: "JSX is a syntax extension for writing HTML-like code in JavaScript.",
+      },
+      {
+        id: 3,
+        text: "What hook manages state?",
+        options: ["useState", "useEffect", "useContext", "useReducer"],
+        correctAnswer: 0,
+        explanation: "useState is the hook used to manage state in functional components.",
+      },
+      {
+        id: 4,
+        text: "What is the virtual DOM?",
+        options: [
+          "An in-memory representation of the DOM",
+          "The actual browser DOM",
+          "A styling tool",
+          "A database",
+        ],
+        correctAnswer: 0,
+        explanation: "The virtual DOM is React's in-memory representation of the UI.",
+      },
+    ],
+  },
+  {
+    id: 2,
+    title: "Web Security",
+    subject: "Security",
+    difficulty: "medium",
+    timeLimit: 12,
+    createdBy: "admin",
+    questions: [
+      {
+        id: 1,
+        text: "What does HTTPS stand for?",
+        options: [
+          "Hypertext Transfer Protocol Secure",
+          "Hypertext Transfer Protocol",
+          "High Transfer Protocol",
+          "Hypertext Transport Protocol",
+        ],
+        correctAnswer: 0,
+        explanation: "HTTPS is the secure version of HTTP using encryption.",
+      },
+      {
+        id: 2,
+        text: "What is XSS?",
+        options: ["Cross-Site Scripting", "Cross-Server System", "Cross-Site System", "Cross-Server Scripting"],
+        correctAnswer: 0,
+        explanation: "XSS is an attack that injects malicious scripts into web pages.",
+      },
+      {
+        id: 3,
+        text: "What is CSRF?",
+        options: [
+          "Cross-Site Request Forgery",
+          "Cross-Server Request Forgery",
+          "Cross-Site Resource Forgery",
+          "Cross-Server Script Forgery",
+        ],
+        correctAnswer: 0,
+        explanation: "CSRF attacks trick users into making unwanted requests.",
+      },
+      {
+        id: 4,
+        text: "What should never be stored in plain text?",
+        options: ["Passwords", "Usernames", "Email addresses", "Quiz results"],
+        correctAnswer: 0,
+        explanation: "Passwords should be hashed before storage.",
+      },
+    ],
+  },
+];
+
+function loadJSON(key, fallback) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJSON(key, value) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+function formatSeconds(totalSeconds) {
+  const safe = Math.max(0, Math.floor(totalSeconds || 0));
+  const m = String(Math.floor(safe / 60)).padStart(2, "0");
+  const s = String(safe % 60).padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function getNextId(items) {
+  return items.length ? Math.max(...items.map((item) => item.id || 0)) + 1 : 1;
+}
+
+function difficultyBadge(difficulty) {
+  const map = {
+    easy: "Easy",
+    medium: "Medium",
+    hard: "Hard",
+  };
+  return map[difficulty] || difficulty;
+}
+
+export default function QuizPlatform() {
+  const [users, setUsers] = useState(() => loadJSON(STORAGE_KEYS.users, defaultUsers));
+  const [quizzes, setQuizzes] = useState(() => loadJSON(STORAGE_KEYS.quizzes, defaultQuizzes));
+  const [attempts, setAttempts] = useState(() => loadJSON(STORAGE_KEYS.attempts, []));
+  const [session, setSession] = useState(() =>
+    loadJSON(STORAGE_KEYS.session, {
+      currentUser: null,
+      view: "login",
+      role: null,
+    })
+  );
+
+  const [loginForm, setLoginForm] = useState({ username: "", password: "" });
+  const [registerForm, setRegisterForm] = useState({ username: "", password: "", role: "user" });
+  const [authMode, setAuthMode] = useState("login");
+  const [authError, setAuthError] = useState("");
+
+  const [selectedQuiz, setSelectedQuiz] = useState(null);
+  const [quizState, setQuizState] = useState(null);
+  const [quizResult, setQuizResult] = useState(null);
+
+  const [quizForm, setQuizForm] = useState({ title: "", subject: "", timeLimit: 10, difficulty: "medium" });
+  const [questionForm, setQuestionForm] = useState({ text: "", options: ["", "", "", ""], correctAnswer: 0, explanation: "" });
+  const [editingQuizId, setEditingQuizId] = useState(null);
+  const [selectedLeaderboardQuizId, setSelectedLeaderboardQuizId] = useState("global");
+
+  useEffect(() => saveJSON(STORAGE_KEYS.users, users), [users]);
+  useEffect(() => saveJSON(STORAGE_KEYS.quizzes, quizzes), [quizzes]);
+  useEffect(() => saveJSON(STORAGE_KEYS.attempts, attempts), [attempts]);
+  useEffect(() => saveJSON(STORAGE_KEYS.session, session), [session]);
+
+  useEffect(() => {
+    if (!quizState?.started || quizState?.submitted) return;
+
+    const timer = setInterval(() => {
+      setQuizState((prev) => {
+        if (!prev || prev.submitted) return prev;
+        const next = Math.max(0, prev.timeRemaining - 1);
+        if (next === 0) {
+          return { ...prev, timeRemaining: 0, submitted: true, autoSubmitted: true };
+        }
+        return { ...prev, timeRemaining: next };
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [quizState?.started, quizState?.submitted]);
+
+  useEffect(() => {
+    if (quizState?.submitted && quizState?.submitted !== "finalized") {
+      finalizeSubmission();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quizState?.submitted]);
+
+  const currentUser = session.currentUser;
+  const currentRole = session.role;
+
+  const leaderboard = useMemo(() => {
+    const stats = {};
+    attempts.forEach((attempt) => {
+      if (!stats[attempt.userId]) {
+        stats[attempt.userId] = { userId: attempt.userId, totalScore: 0, attempts: 0, bestScore: 0, totalTime: 0 };
+      }
+      stats[attempt.userId].totalScore += attempt.score;
+      stats[attempt.userId].attempts += 1;
+      stats[attempt.userId].bestScore = Math.max(stats[attempt.userId].bestScore, attempt.percentage);
+      stats[attempt.userId].totalTime += attempt.timeTaken;
+    });
+
+    return Object.values(stats).sort((a, b) => {
+      if (b.bestScore !== a.bestScore) return b.bestScore - a.bestScore;
+      return a.totalTime - b.totalTime;
+    });
+  }, [attempts]);
+
+  const filteredLeaderboard = useMemo(() => {
+    const base = leaderboard.map((row, index) => ({ ...row, rank: index + 1 }));
+    if (selectedLeaderboardQuizId === "global") return base;
+
+    const quizId = Number(selectedLeaderboardQuizId);
+    const byQuiz = {};
+    attempts.filter((a) => a.quizId === quizId).forEach((attempt) => {
+      if (!byQuiz[attempt.userId]) {
+        byQuiz[attempt.userId] = { userId: attempt.userId, totalScore: 0, attempts: 0, bestScore: 0, totalTime: 0 };
+      }
+      byQuiz[attempt.userId].totalScore += attempt.score;
+      byQuiz[attempt.userId].attempts += 1;
+      byQuiz[attempt.userId].bestScore = Math.max(byQuiz[attempt.userId].bestScore, attempt.percentage);
+      byQuiz[attempt.userId].totalTime += attempt.timeTaken;
+    });
+
+    return Object.values(byQuiz)
+      .sort((a, b) => (b.bestScore !== a.bestScore ? b.bestScore - a.bestScore : a.totalTime - b.totalTime))
+      .map((row, index) => ({ ...row, rank: index + 1 }));
+  }, [attempts, leaderboard, selectedLeaderboardQuizId]);
+
+  const quizStats = useMemo(() => {
+    return quizzes.map((quiz) => {
+      const quizAttempts = attempts.filter((a) => a.quizId === quiz.id);
+      const avgScore = quizAttempts.length
+        ? Math.round(quizAttempts.reduce((sum, a) => sum + a.percentage, 0) / quizAttempts.length)
+        : 0;
+
+      const wrongCounts = {};
+      quiz.questions.forEach((q) => {
+        wrongCounts[q.id] = 0;
+      });
+      quizAttempts.forEach((attempt) => {
+        attempt.answers.forEach((answer, idx) => {
+          if (answer !== quiz.questions[idx]?.correctAnswer) {
+            const qId = quiz.questions[idx]?.id;
+            if (qId) wrongCounts[qId] = (wrongCounts[qId] || 0) + 1;
+          }
+        });
+      });
+
+      const mostMissedQuestion = Object.entries(wrongCounts).sort((a, b) => b[1] - a[1])[0];
+
+      return {
+        quizId: quiz.id,
+        attempts: quizAttempts.length,
+        avgScore,
+        mostMissed: mostMissedQuestion ? quiz.questions.find((q) => q.id === Number(mostMissedQuestion[0]))?.text : "N/A",
+      };
+    });
+  }, [attempts, quizzes]);
+
+  function handleLogin(e) {
+    e.preventDefault();
+    setAuthError("");
+
+    const user = users.find(
+      (u) => u.username.toLowerCase() === loginForm.username.trim().toLowerCase() && u.password === loginForm.password
+    );
+
+    if (!user) {
+      setAuthError("Invalid username or password.");
+      return;
+    }
+
+    setSession({ currentUser: user.username, role: user.role, view: user.role === "admin" ? "admin" : "dashboard" });
+    setLoginForm({ username: "", password: "" });
+    setAuthMode("login");
+  }
+
+  function handleRegister(e) {
+    e.preventDefault();
+    setAuthError("");
+
+    const uname = registerForm.username.trim();
+    if (!uname || !registerForm.password.trim()) {
+      setAuthError("Username and password are required.");
+      return;
+    }
+
+    if (users.some((u) => u.username.toLowerCase() === uname.toLowerCase())) {
+      setAuthError("Username already exists.");
+      return;
+    }
+
+    const newUser = { username: uname, password: registerForm.password, role: registerForm.role };
+    setUsers((prev) => [...prev, newUser]);
+    setSession({ currentUser: newUser.username, role: newUser.role, view: newUser.role === "admin" ? "admin" : "dashboard" });
+    setRegisterForm({ username: "", password: "", role: "user" });
+    setAuthMode("login");
+  }
+
+  function handleLogout() {
+    setSession({ currentUser: null, role: null, view: "login" });
+    setSelectedQuiz(null);
+    setQuizState(null);
+    setQuizResult(null);
+    setEditingQuizId(null);
+  }
+
+  function startQuiz(quiz) {
+    setSelectedQuiz(quiz);
+    setQuizResult(null);
+    setQuizState({
+      started: true,
+      submitted: false,
+      quizId: quiz.id,
+      currentQuestion: 0,
+      answers: Array(quiz.questions.length).fill(null),
+      startTime: Date.now(),
+      timeRemaining: quiz.timeLimit * 60,
+      autoSubmitted: false,
+    });
+    setSession((prev) => ({ ...prev, view: "quiz" }));
+  }
+
+  function handleAnswer(optionIndex) {
+    if (!quizState) return;
+    const nextAnswers = [...quizState.answers];
+    nextAnswers[quizState.currentQuestion] = optionIndex;
+    setQuizState({ ...quizState, answers: nextAnswers });
+  }
+
+  function handleNext() {
+    if (!quizState || !selectedQuiz) return;
+    setQuizState({
+      ...quizState,
+      currentQuestion: Math.min(quizState.currentQuestion + 1, selectedQuiz.questions.length - 1),
+    });
+  }
+
+  function handlePrevious() {
+    if (!quizState) return;
+    setQuizState({ ...quizState, currentQuestion: Math.max(quizState.currentQuestion - 1, 0) });
+  }
+
+  function finalizeSubmission() {
+    if (!quizState || !selectedQuiz || quizState.submitted === "finalized") return;
+
+    const correctCount = quizState.answers.reduce((count, answer, idx) => {
+      return answer === selectedQuiz.questions[idx].correctAnswer ? count + 1 : count;
+    }, 0);
+
+    const percentage = Math.round((correctCount / selectedQuiz.questions.length) * 100);
+    const timeTaken = Math.max(1, Math.round((Date.now() - quizState.startTime) / 1000));
+
+    const attempt = {
+      id: getNextId(attempts),
+      userId: currentUser,
+      quizId: selectedQuiz.id,
+      score: correctCount,
+      percentage,
+      timeTaken,
+      date: new Date().toISOString().split("T")[0],
+      answers: quizState.answers,
+    };
+
+    setAttempts((prev) => [...prev, attempt]);
+    setQuizResult({
+      attempt,
+      correctCount,
+      percentage,
+      totalQuestions: selectedQuiz.questions.length,
+      submittedByAutoTimer: quizState.autoSubmitted,
+    });
+
+    setQuizState((prev) => (prev ? { ...prev, submitted: "finalized" } : prev));
+    setSession((prev) => ({ ...prev, view: "results" }));
+  }
+
+  function submitQuiz() {
+    setQuizState((prev) => (prev ? { ...prev, submitted: true } : prev));
+  }
+
+  function createQuiz(e) {
+    e.preventDefault();
+
+    if (!quizForm.title.trim() || !quizForm.subject.trim()) return;
+
+    const newQuiz = {
+      id: getNextId(quizzes),
+      title: quizForm.title.trim(),
+      subject: quizForm.subject.trim(),
+      difficulty: quizForm.difficulty,
+      timeLimit: Number(quizForm.timeLimit) || 10,
+      createdBy: currentUser,
+      questions: [],
+    };
+
+    setQuizzes((prev) => [...prev, newQuiz]);
+    setEditingQuizId(newQuiz.id);
+    setQuizForm({ title: "", subject: "", timeLimit: 10, difficulty: "medium" });
+  }
+
+  function addQuestion(e, quizId) {
+    e.preventDefault();
+
+    const validOptions = questionForm.options.map((o) => o.trim()).filter(Boolean);
+    if (!questionForm.text.trim() || validOptions.length < 2) return;
+
+    const newQuestion = {
+      id: getNextId(quizzes.find((q) => q.id === quizId)?.questions || []),
+      text: questionForm.text.trim(),
+      options: [
+        questionForm.options[0].trim(),
+        questionForm.options[1].trim(),
+        questionForm.options[2].trim(),
+        questionForm.options[3].trim(),
+      ],
+      correctAnswer: Number(questionForm.correctAnswer),
+      explanation: questionForm.explanation.trim(),
+    };
+
+    setQuizzes((prev) =>
+      prev.map((q) => (q.id === quizId ? { ...q, questions: [...q.questions, newQuestion] } : q))
+    );
+
+    setQuestionForm({ text: "", options: ["", "", "", ""], correctAnswer: 0, explanation: "" });
+  }
+
+  function deleteQuiz(quizId) {
+    setQuizzes((prev) => prev.filter((q) => q.id !== quizId));
+    setAttempts((prev) => prev.filter((a) => a.quizId !== quizId));
+    if (editingQuizId === quizId) setEditingQuizId(null);
+  }
+
+  function deleteQuestion(quizId, questionId) {
+    setQuizzes((prev) =>
+      prev.map((quiz) =>
+        quiz.id === quizId ? { ...quiz, questions: quiz.questions.filter((q) => q.id !== questionId) } : quiz
+      )
+    );
+  }
+
+  function goToDashboard() {
+    setSession((prev) => ({ ...prev, view: currentRole === "admin" ? "admin" : "dashboard" }));
+    setSelectedQuiz(null);
+    setQuizState(null);
+    setQuizResult(null);
+  }
+
+  const currentQuizQuestion = selectedQuiz && quizState ? selectedQuiz.questions[quizState.currentQuestion] : null;
+  const answeredCount = quizState?.answers.filter((a) => a !== null).length || 0;
+
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-white to-emerald-100 text-slate-800">
+        <div className="mx-auto flex min-h-screen max-w-6xl flex-col items-center justify-center px-4 py-10">
+          <div className="mb-8 text-center">
+            <h1 className="text-4xl font-bold tracking-tight text-emerald-700">Online Quiz Platform</h1>
+            <p className="mt-2 text-slate-600">
+              Secure login, timed quizzes, admin quiz management, results, and leaderboard.
+            </p>
+          </div>
+
+          <div className="grid w-full gap-6 rounded-3xl bg-white p-6 shadow-xl md:grid-cols-2 md:p-8">
+            <div className="rounded-2xl bg-emerald-50 p-6">
+              <h2 className="text-2xl font-semibold text-emerald-700">Features</h2>
+              <ul className="mt-4 space-y-3 text-sm leading-6 text-slate-700">
+                <li>• User and admin login</li>
+                <li>• Quiz listing with subject, time, and difficulty</li>
+                <li>• One-question-at-a-time quiz flow with countdown timer</li>
+                <li>• Auto-submit when the timer ends</li>
+                <li>• Scores, percentage, time taken, and history</li>
+                <li>• Leaderboard sorted by score and time</li>
+                <li>• Admin create/edit/delete quiz and questions</li>
+              </ul>
+              <div className="mt-6 rounded-2xl border border-emerald-200 bg-white p-4 text-sm text-slate-600">
+                Demo accounts: <span className="font-semibold">admin / admin123</span> or <span className="font-semibold">demo / demo123</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 p-6">
+              <div className="flex gap-2 rounded-full bg-slate-100 p-1 text-sm">
+                <button
+                  onClick={() => setAuthMode("login")}
+                  className={`flex-1 rounded-full px-4 py-2 font-medium ${authMode === "login" ? "bg-emerald-600 text-white" : "text-slate-600"}`}
+                >
+                  Login
+                </button>
+                <button
+                  onClick={() => setAuthMode("register")}
+                  className={`flex-1 rounded-full px-4 py-2 font-medium ${authMode === "register" ? "bg-emerald-600 text-white" : "text-slate-600"}`}
+                >
+                  Register
+                </button>
+              </div>
+
+              {authError ? <p className="mt-4 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{authError}</p> : null}
+
+              {authMode === "login" ? (
+                <form onSubmit={handleLogin} className="mt-5 space-y-4">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Username</label>
+                    <input
+                      className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none ring-0 focus:border-emerald-500"
+                      value={loginForm.username}
+                      onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
+                      placeholder="Enter username"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Password</label>
+                    <input
+                      type="password"
+                      className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-emerald-500"
+                      value={loginForm.password}
+                      onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                      placeholder="Enter password"
+                    />
+                  </div>
+                  <button className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700">
+                    Sign In
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleRegister} className="mt-5 space-y-4">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Username</label>
+                    <input
+                      className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-emerald-500"
+                      value={registerForm.username}
+                      onChange={(e) => setRegisterForm({ ...registerForm, username: e.target.value })}
+                      placeholder="Choose a username"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Password</label>
+                    <input
+                      type="password"
+                      className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-emerald-500"
+                      value={registerForm.password}
+                      onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
+                      placeholder="Choose a password"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Role</label>
+                    <select
+                      className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-emerald-500"
+                      value={registerForm.role}
+                      onChange={(e) => setRegisterForm({ ...registerForm, role: e.target.value })}
+                    >
+                      <option value="user">User</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  <button className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700">
+                    Create Account
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (session.view === "quiz" && selectedQuiz && quizState) {
+    const progress = ((quizState.currentQuestion + 1) / selectedQuiz.questions.length) * 100;
+
+    return (
+      <div className="min-h-screen bg-slate-50 p-4 text-slate-800 md:p-8">
+        <div className="mx-auto max-w-4xl">
+          <div className="mb-4 flex items-center justify-between rounded-2xl bg-white p-4 shadow-sm">
+            <div>
+              <p className="text-sm text-slate-500">Attempting quiz</p>
+              <h1 className="text-xl font-bold text-emerald-700">{selectedQuiz.title}</h1>
+            </div>
+            <div className="text-right">
+              <p className="text-sm text-slate-500">Time left</p>
+              <div className="text-2xl font-bold text-emerald-700">{formatSeconds(quizState.timeRemaining)}</div>
+            </div>
+          </div>
+
+          <div className="mb-4 h-3 overflow-hidden rounded-full bg-slate-200">
+            <div className="h-full rounded-full bg-emerald-600" style={{ width: `${progress}%` }} />
+          </div>
+
+          <div className="rounded-3xl bg-white p-6 shadow-lg md:p-8">
+            <div className="mb-6 flex items-center justify-between text-sm text-slate-500">
+              <span>
+                Question {quizState.currentQuestion + 1} of {selectedQuiz.questions.length}
+              </span>
+              <span>
+                Answered: {answeredCount}/{selectedQuiz.questions.length}
+              </span>
+            </div>
+
+            <h2 className="text-2xl font-semibold leading-snug">{currentQuizQuestion.text}</h2>
+            {currentQuizQuestion.explanation ? (
+              <p className="mt-2 text-sm text-slate-500">Choose the best answer.</p>
+            ) : null}
+
+            <div className="mt-6 grid gap-3">
+              {currentQuizQuestion.options.map((option, idx) => {
+                const selected = quizState.answers[quizState.currentQuestion] === idx;
+                return (
+                  <button
+                    key={idx}
+                    onClick={() => handleAnswer(idx)}
+                    className={`rounded-2xl border px-4 py-4 text-left transition ${
+                      selected ? "border-emerald-600 bg-emerald-50" : "border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/50"
+                    }`}
+                  >
+                    <span className="mr-3 inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-sm font-semibold text-slate-700">
+                      {String.fromCharCode(65 + idx)}
+                    </span>
+                    <span className="text-base">{option}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-8 flex flex-wrap gap-3">
+              <button
+                onClick={handlePrevious}
+                disabled={quizState.currentQuestion === 0}
+                className="rounded-xl border border-slate-300 px-4 py-3 font-medium disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <button
+                onClick={handleNext}
+                disabled={quizState.currentQuestion === selectedQuiz.questions.length - 1}
+                className="rounded-xl border border-slate-300 px-4 py-3 font-medium disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Next
+              </button>
+              <div className="ml-auto flex gap-3">
+                <button onClick={goToDashboard} className="rounded-xl border border-slate-300 px-4 py-3 font-medium">
+                  Save & Exit
+                </button>
+                <button
+                  onClick={submitQuiz}
+                  className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700"
+                >
+                  Submit Quiz
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (session.view === "results" && quizResult && selectedQuiz) {
+    const attemptAnswers = quizResult.attempt.answers;
+
+    return (
+      <div className="min-h-screen bg-slate-50 p-4 text-slate-800 md:p-8">
+        <div className="mx-auto max-w-5xl">
+          <div className="rounded-3xl bg-white p-6 shadow-lg md:p-8">
+            <h1 className="text-3xl font-bold text-emerald-700">Quiz Results</h1>
+            <p className="mt-2 text-slate-600">
+              {quizResult.submittedByAutoTimer ? "Your quiz was auto-submitted when the timer ended." : "Your answers have been submitted."}
+            </p>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-4">
+              <StatCard label="Score" value={`${quizResult.correctCount}/${quizResult.totalQuestions}`} />
+              <StatCard label="Percentage" value={`${quizResult.percentage}%`} />
+              <StatCard label="Time Taken" value={`${quizResult.attempt.timeTaken}s`} />
+              <StatCard label="Quiz" value={selectedQuiz.title} />
+            </div>
+
+            <div className="mt-8 space-y-4">
+              {selectedQuiz.questions.map((q, idx) => {
+                const chosen = attemptAnswers[idx];
+                const correct = q.correctAnswer;
+                const isRight = chosen === correct;
+                return (
+                  <div key={q.id} className="rounded-2xl border border-slate-200 p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-lg font-semibold">
+                        {idx + 1}. {q.text}
+                      </h3>
+                      <span className={`rounded-full px-3 py-1 text-sm font-medium ${isRight ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}>
+                        {isRight ? "Correct" : "Wrong"}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-600">
+                      Your answer: <span className="font-medium">{q.options[chosen] ?? "Not answered"}</span>
+                    </p>
+                    <p className="text-sm text-slate-600">
+                      Correct answer: <span className="font-medium">{q.options[correct]}</span>
+                    </p>
+                    {q.explanation ? <p className="mt-2 text-sm text-slate-500">Explanation: {q.explanation}</p> : null}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-8 flex flex-wrap gap-3">
+              <button onClick={goToDashboard} className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700">
+                Back to Dashboard
+              </button>
+              <button onClick={() => startQuiz(selectedQuiz)} className="rounded-xl border border-slate-300 px-4 py-3 font-semibold">
+                Retake Quiz
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (session.view === "admin" && currentRole === "admin") {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800">
+        <header className="border-b bg-white">
+          <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 md:px-8">
+            <div>
+              <h1 className="text-2xl font-bold text-emerald-700">Admin Dashboard</h1>
+              <p className="text-sm text-slate-500">Manage quizzes, questions, and monitoring tools</p>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={goToDashboard} className="rounded-xl border border-slate-300 px-4 py-2 font-medium">
+                User View
+              </button>
+              <button onClick={handleLogout} className="rounded-xl bg-slate-900 px-4 py-2 font-medium text-white">
+                Logout
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 md:grid-cols-[1.1fr_1.3fr] md:px-8">
+          <section className="space-y-6">
+            <Panel title="Create New Quiz">
+              <form onSubmit={createQuiz} className="grid gap-3 md:grid-cols-2">
+                <input className="rounded-xl border px-4 py-3" placeholder="Title" value={quizForm.title} onChange={(e) => setQuizForm({ ...quizForm, title: e.target.value })} />
+                <input className="rounded-xl border px-4 py-3" placeholder="Subject / Topic" value={quizForm.subject} onChange={(e) => setQuizForm({ ...quizForm, subject: e.target.value })} />
+                <input
+                  type="number"
+                  min="1"
+                  className="rounded-xl border px-4 py-3"
+                  placeholder="Time limit (minutes)"
+                  value={quizForm.timeLimit}
+                  onChange={(e) => setQuizForm({ ...quizForm, timeLimit: e.target.value })}
+                />
+                <select className="rounded-xl border px-4 py-3" value={quizForm.difficulty} onChange={(e) => setQuizForm({ ...quizForm, difficulty: e.target.value })}>
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+                <button className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white md:col-span-2">Create Quiz</button>
+              </form>
+            </Panel>
+
+            <Panel title="Quiz Monitoring Tools">
+              <div className="grid gap-3 md:grid-cols-3">
+                {quizStats.map((s) => (
+                  <div key={s.quizId} className="rounded-2xl border border-slate-200 p-4">
+                    <p className="font-semibold text-slate-700">{quizzes.find((q) => q.id === s.quizId)?.title}</p>
+                    <p className="mt-2 text-sm text-slate-600">Attempts: {s.attempts}</p>
+                    <p className="text-sm text-slate-600">Avg Score: {s.avgScore}%</p>
+                    <p className="text-sm text-slate-600">Most Missed: {s.mostMissed}</p>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          </section>
+
+          <section className="space-y-6">
+            <Panel title="Quiz Management">
+              <div className="space-y-4">
+                {quizzes.map((quiz) => (
+                  <div key={quiz.id} className="rounded-2xl border border-slate-200 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-xl font-semibold">{quiz.title}</h3>
+                        <p className="text-sm text-slate-500">
+                          {quiz.subject} • {quiz.questions.length} questions • {quiz.timeLimit} min • {difficultyBadge(quiz.difficulty)}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => setEditingQuizId(quiz.id)} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium">
+                          Edit
+                        </button>
+                        <button onClick={() => deleteQuiz(quiz.id)} className="rounded-xl border border-red-300 px-3 py-2 text-sm font-medium text-red-600">
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+
+                    {editingQuizId === quiz.id ? (
+                      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                        <form onSubmit={(e) => addQuestion(e, quiz.id)} className="rounded-2xl bg-slate-50 p-4">
+                          <h4 className="font-semibold">Add Question</h4>
+                          <div className="mt-3 grid gap-3">
+                            <textarea
+                              rows="3"
+                              className="rounded-xl border px-4 py-3"
+                              placeholder="Question text"
+                              value={questionForm.text}
+                              onChange={(e) => setQuestionForm({ ...questionForm, text: e.target.value })}
+                            />
+                            {questionForm.options.map((opt, idx) => (
+                              <input
+                                key={idx}
+                                className="rounded-xl border px-4 py-3"
+                                placeholder={`Option ${idx + 1}`}
+                                value={opt}
+                                onChange={(e) => {
+                                  const options = [...questionForm.options];
+                                  options[idx] = e.target.value;
+                                  setQuestionForm({ ...questionForm, options });
+                                }}
+                              />
+                            ))}
+                            <select
+                              className="rounded-xl border px-4 py-3"
+                              value={questionForm.correctAnswer}
+                              onChange={(e) => setQuestionForm({ ...questionForm, correctAnswer: Number(e.target.value) })}
+                            >
+                              <option value={0}>Correct Answer: Option 1</option>
+                              <option value={1}>Correct Answer: Option 2</option>
+                              <option value={2}>Correct Answer: Option 3</option>
+                              <option value={3}>Correct Answer: Option 4</option>
+                            </select>
+                            <textarea
+                              rows="2"
+                              className="rounded-xl border px-4 py-3"
+                              placeholder="Explanation (optional)"
+                              value={questionForm.explanation}
+                              onChange={(e) => setQuestionForm({ ...questionForm, explanation: e.target.value })}
+                            />
+                            <button className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white">Add Question</button>
+                          </div>
+                        </form>
+
+                        <div className="rounded-2xl bg-white p-4">
+                          <h4 className="font-semibold">Question Bank</h4>
+                          <div className="mt-3 space-y-3">
+                            {quiz.questions.length === 0 ? (
+                              <p className="text-sm text-slate-500">No questions yet.</p>
+                            ) : (
+                              quiz.questions.map((q, idx) => (
+                                <div key={q.id} className="rounded-xl border border-slate-200 p-3">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <p className="text-sm font-medium">
+                                      {idx + 1}. {q.text}
+                                    </p>
+                                    <button onClick={() => deleteQuestion(quiz.id, q.id)} className="text-sm font-medium text-red-600">
+                                      Delete
+                                    </button>
+                                  </div>
+                                  <p className="mt-1 text-xs text-slate-500">Correct answer: {q.options[q.correctAnswer]}</p>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800">
+      <header className="border-b bg-white">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4 md:px-8">
+          <div>
+            <h1 className="text-2xl font-bold text-emerald-700">Quiz Dashboard</h1>
+            <p className="text-sm text-slate-500">Welcome, {currentUser}</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={goToDashboard} className="rounded-xl border border-slate-300 px-4 py-2 font-medium">
+              Quizzes
+            </button>
+            <button onClick={() => setSession((prev) => ({ ...prev, view: "leaderboard" }))} className="rounded-xl border border-slate-300 px-4 py-2 font-medium">
+              Leaderboard
+            </button>
+            {currentRole === "admin" ? (
+              <button onClick={() => setSession((prev) => ({ ...prev, view: "admin" }))} className="rounded-xl border border-slate-300 px-4 py-2 font-medium">
+                Admin Panel
+              </button>
+            ) : null}
+            <button onClick={handleLogout} className="rounded-xl bg-slate-900 px-4 py-2 font-medium text-white">
+              Logout
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-7xl px-4 py-6 md:px-8">
+        {session.view === "leaderboard" ? (
+          <div className="space-y-6">
+            <Panel title="Leaderboard & Results">
+              <div className="flex flex-wrap gap-3">
+                <select
+                  className="rounded-xl border px-4 py-3"
+                  value={selectedLeaderboardQuizId}
+                  onChange={(e) => setSelectedLeaderboardQuizId(e.target.value)}
+                >
+                  <option value="global">Global Leaderboard</option>
+                  {quizzes.map((quiz) => (
+                    <option key={quiz.id} value={quiz.id}>
+                      {quiz.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="bg-slate-100 text-slate-600">
+                    <tr>
+                      <th className="px-4 py-3">Rank</th>
+                      <th className="px-4 py-3">User</th>
+                      <th className="px-4 py-3">Best Score</th>
+                      <th className="px-4 py-3">Attempts</th>
+                      <th className="px-4 py-3">Total Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredLeaderboard.length === 0 ? (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={5}>
+                          No leaderboard data yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredLeaderboard.slice(0, 10).map((row) => (
+                        <tr key={row.userId} className="border-t">
+                          <td className="px-4 py-3 font-semibold">#{row.rank}</td>
+                          <td className="px-4 py-3">{row.userId}</td>
+                          <td className="px-4 py-3">{row.bestScore}%</td>
+                          <td className="px-4 py-3">{row.attempts}</td>
+                          <td className="px-4 py-3">{row.totalTime}s</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+
+            <Panel title="Past Attempts">
+              <div className="space-y-3">
+                {attempts.filter((a) => a.userId === currentUser).length === 0 ? (
+                  <p className="text-sm text-slate-500">You have not attempted any quiz yet.</p>
+                ) : (
+                  attempts
+                    .filter((a) => a.userId === currentUser)
+                    .slice()
+                    .reverse()
+                    .map((attempt) => {
+                      const quiz = quizzes.find((q) => q.id === attempt.quizId);
+                      return (
+                        <div key={attempt.id} className="rounded-2xl border border-slate-200 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="font-semibold">{quiz?.title || "Deleted Quiz"}</p>
+                              <p className="text-sm text-slate-500">Date: {attempt.date}</p>
+                            </div>
+                            <div className="text-right text-sm">
+                              <p>Score: {attempt.score}</p>
+                              <p>Percentage: {attempt.percentage}%</p>
+                              <p>Time: {attempt.timeTaken}s</p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+            </Panel>
+          </div>
+        ) : (
+          <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+            <div className="space-y-4">
+              <Panel title="Available Quizzes">
+                <div className="grid gap-4 md:grid-cols-2">
+                  {quizzes.map((quiz) => (
+                    <div key={quiz.id} className="rounded-2xl border border-slate-200 p-5 shadow-sm">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h3 className="text-xl font-semibold">{quiz.title}</h3>
+                          <p className="text-sm text-slate-500">{quiz.subject}</p>
+                        </div>
+                        <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                          {difficultyBadge(quiz.difficulty)}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-slate-600">
+                        <p>Questions: {quiz.questions.length}</p>
+                        <p>Time: {quiz.timeLimit} min</p>
+                        <p>Created by: {quiz.createdBy}</p>
+                        <p>Subject: {quiz.subject}</p>
+                      </div>
+
+                      <button
+                        onClick={() => startQuiz(quiz)}
+                        disabled={quiz.questions.length === 0}
+                        className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        Start Quiz
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            </div>
+
+            <div className="space-y-4">
+              <Panel title="User Overview">
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                  <StatCard label="Total Quizzes" value={quizzes.length} />
+                  <StatCard label="Total Attempts" value={attempts.length} />
+                  <StatCard label="Your Attempts" value={attempts.filter((a) => a.userId === currentUser).length} />
+                  <StatCard label="Role" value={currentRole} />
+                </div>
+              </Panel>
+
+              <Panel title="Recent Results">
+                <div className="space-y-3">
+                  {attempts
+                    .filter((a) => a.userId === currentUser)
+                    .slice()
+                    .reverse()
+                    .slice(0, 5)
+                    .map((attempt) => {
+                      const quiz = quizzes.find((q) => q.id === attempt.quizId);
+                      return (
+                        <div key={attempt.id} className="rounded-2xl border border-slate-200 p-4">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <p className="font-medium">{quiz?.title || "Deleted Quiz"}</p>
+                              <p className="text-xs text-slate-500">{attempt.date}</p>
+                            </div>
+                            <p className="text-lg font-bold text-emerald-700">{attempt.percentage}%</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  {attempts.filter((a) => a.userId === currentUser).length === 0 ? (
+                    <p className="text-sm text-slate-500">No quiz attempts yet. Start your first quiz from the left panel.</p>
+                  ) : null}
+                </div>
+              </Panel>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function Panel({ title, children }) {
+  return (
+    <section className="rounded-3xl bg-white p-5 shadow-sm md:p-6">
+      <h2 className="text-xl font-bold text-emerald-700">{title}</h2>
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
+function StatCard({ label, value }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <p className="text-sm text-slate-500">{label}</p>
+      <p className="mt-1 text-2xl font-bold text-slate-800">{value}</p>
+    </div>
+  );
+}
